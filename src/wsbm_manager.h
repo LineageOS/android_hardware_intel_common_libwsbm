@@ -93,9 +93,19 @@ extern int wsbmBOData(struct _WsbmBufferObject *r_buf,
 		      unsigned size, const void *data,
 		      struct _WsbmBufferPool *pool, uint32_t placement);
 
-extern int wsbmBODataUB(struct _WsbmBufferObject *buf,
+#ifdef ASUS_ZENFONE2_MM_BLOBS
+extern int wsbmBODataUserptr(struct _WsbmBufferObject *buf,
             unsigned size, const void *data, struct _WsbmBufferPool *newPool,
             uint32_t placement, const unsigned long *user_ptr, int fd);
+#else
+extern int wsbmBODataUb(struct _WsbmBufferObject *buf,
+            unsigned size, const void *data, struct _WsbmBufferPool *newPool,
+            uint32_t placement, const unsigned long *user_ptr, int fd);
+#endif
+
+extern int wsbmBODataDmabuf(struct _WsbmBufferObject *buf,
+            unsigned size, const void *data, struct _WsbmBufferPool *newPool,
+            uint32_t placement, int fd);
 
 extern int wsbmBOSetStatus(struct _WsbmBufferObject *buf,
 			   uint32_t setPlacement, uint32_t clrPlacement);

@@ -536,7 +536,11 @@ ttm_pool_ub_create(struct _WsbmBufferPool *pool, unsigned long size, uint32_t pl
     struct _TTMPool *ttmPool = containerOf(pool, struct _TTMPool, pool);
     int ret;
     unsigned pageSize = ttmPool->pageSize;
+#ifdef ASUS_ZENFONE2_MM_BLOBS
+    union ttm_pl_create_userptr_arg arg;
+#else
     union ttm_pl_create_ub_arg arg;
+#endif
 
     if (!dBuf)
 	    return NULL;
@@ -556,12 +560,17 @@ ttm_pool_ub_create(struct _WsbmBufferPool *pool, unsigned long size, uint32_t pl
     arg.req.placement = placement;
     arg.req.page_alignment = alignment / pageSize;
     arg.req.user_address = (unsigned long)user_ptr;
-#ifndef ASUS_ZENFONE2_LP_BLOBS
+#ifndef ASUS_ZENFONE2_MM_BLOBS
     arg.req.fd = fd;
 #endif
 
+#ifdef ASUS_ZENFONE2_MM_BLOBS
+    DRMRESTARTCOMMANDWRITEREAD(pool->fd, ttmPool->devOffset + TTM_PL_CREATE_USERPTR,
+			       arg, ret);
+#else
     DRMRESTARTCOMMANDWRITEREAD(pool->fd, ttmPool->devOffset + TTM_PL_CREATE_UB,
 			       arg, ret);
+#endif
     if (ret)
         goto out_err2;
 
@@ -583,3 +592,56 @@ ttm_pool_ub_create(struct _WsbmBufferPool *pool, unsigned long size, uint32_t pl
     return NULL;
 }
 
+#ifdef ASUS_ZENFONE2_MM_BLOBS
+struct _WsbmBufStorage *
+ttm_pool_dmabuf_create(struct _WsbmBufferPool *pool, unsigned long size, uint32_t placement, unsigned alignment, int fd)
+{
+    struct _TTMBuffer *dBuf = (struct _TTMBuffer *)
+	    calloc(1, sizeof(*dBuf));
+    struct _TTMPool *ttmPool = containerOf(pool, struct _TTMPool, pool);
+    int ret;
+    unsigned pageSize = ttmPool->pageSize;
+    union ttm_pl_create_dmabuf_arg arg;
+
+    if (!dBuf)
+	    return NULL;
+
+    if ((alignment > pageSize) && (alignment % pageSize))
+	    goto out_err0;
+
+    ret = wsbmBufStorageInit(&dBuf->buf, pool);
+    if (ret)
+	    goto out_err0;
+
+    ret = WSBM_COND_INIT(&dBuf->event);
+    if (ret)
+	    goto out_err1;
+
+    arg.req.size = size;
+    arg.req.placement = placement;
+    arg.req.page_alignment = alignment / pageSize;
+    arg.req.dmabuf_fd = fd;
+
+    DRMRESTARTCOMMANDWRITEREAD(pool->fd, ttmPool->devOffset + TTM_PL_CREATE_USERPTR,
+			       arg, ret);
+    if (ret)
+        goto out_err2;
+
+    dBuf->requestedSize = size;
+    dBuf->kBuf.gpuOffset = arg.rep.gpu_offset;
+    dBuf->mapHandle = arg.rep.map_handle;
+    dBuf->realSize = arg.rep.bo_size;
+    dBuf->kBuf.placement = arg.rep.placement;
+    dBuf->kBuf.handle = arg.rep.handle;
+
+    return &dBuf->buf;
+
+  out_err2:
+    WSBM_COND_FREE(&dBuf->event);
+  out_err1:
+    wsbmBufStorageTakedown(&dBuf->buf);
+  out_err0:
+    free(dBuf);
+    return NULL;
+}
+#endif

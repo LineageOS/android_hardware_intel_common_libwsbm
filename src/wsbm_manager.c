@@ -610,10 +610,17 @@ wsbmBOData(struct _WsbmBufferObject *buf,
     return retval;
 }
 
+#ifdef ASUS_ZENFONE2_MM_BLOBS
 int
-wsbmBODataUB(struct _WsbmBufferObject *buf,
+wsbmBODataUserptr(struct _WsbmBufferObject *buf,
         unsigned size, const void *data, struct _WsbmBufferPool *newPool,
         uint32_t placement, const unsigned long *user_ptr, int fd)
+#else
+int
+wsbmBODataUb(struct _WsbmBufferObject *buf,
+        unsigned size, const void *data, struct _WsbmBufferPool *newPool,
+        uint32_t placement, const unsigned long *user_ptr, int fd)
+#endif
 {
     int newBuffer;
     int retval = 0;
@@ -739,6 +746,138 @@ wsbmBODataUB(struct _WsbmBufferObject *buf,
 
     return retval;
 }
+
+#ifdef ASUS_ZENFONE2_MM_BLOBS
+int
+wsbmBODataDmabuf(struct _WsbmBufferObject *buf,
+        unsigned size, const void *data, struct _WsbmBufferPool *newPool,
+        uint32_t placement, const unsigned long *user_ptr, int fd)
+{
+    int newBuffer;
+    int retval = 0;
+    struct _WsbmBufStorage *storage;
+    int synced = 0;
+    uint32_t placement_diff;
+    struct _WsbmBufferPool *curPool;
+    extern struct _WsbmBufStorage *
+    ttm_pool_ub_create(struct _WsbmBufferPool *pool,
+        unsigned long size, uint32_t placement, unsigned alignment,
+        const unsigned long *user_ptr, int fd);
+
+    if (buf->bufferType == WSBM_BUFFER_SIMPLE)
+        return -EINVAL;
+
+    storage = buf->storage;
+
+    if (newPool == NULL)
+        newPool = buf->pool;
+
+    if (newPool == NULL)
+        return -EINVAL;
+
+    newBuffer = (!storage || storage->pool != newPool ||
+        storage->pool->size(storage) < size ||
+        storage->pool->size(storage) >
+        size + WSBM_BODATA_SIZE_ACCEPT);
+
+    if (!placement)
+        placement = buf->placement;
+
+    if (newBuffer) {
+        if (buf->bufferType == WSBM_BUFFER_REF)
+            return -EINVAL;
+
+        wsbmBufStorageUnref(&buf->storage);
+
+        if (size == 0) {
+            buf->pool = newPool;
+            buf->placement = placement;
+            retval = 0;
+            goto out;
+        }
+
+        buf->storage =
+            ttm_pool_dmabuf_create(newPool, size, placement, buf->alignment, user_ptr, fd);
+        if (!buf->storage) {
+            retval = -ENOMEM;
+            goto out;
+        }
+
+        buf->placement = placement;
+        buf->pool = newPool;
+    } else if (wsbmAtomicRead(&storage->onList) ||
+        0 != storage->pool->syncforcpu(storage, WSBM_SYNCCPU_WRITE |
+        WSBM_SYNCCPU_DONT_BLOCK)) {
+        /*
+        * Buffer is busy. need to create a new one.
+        * Actually such case will not be encountered for current ICS implementation
+        * TODO: maybe need refine the following code when such usage case is required
+        */
+
+        struct _WsbmBufStorage *tmp_storage;
+
+        curPool = storage->pool;
+
+        tmp_storage =
+            ttm_pool_dmabuf_create(curPool, size, placement, buf->alignment, user_ptr, fd);
+
+        if (tmp_storage) {
+            wsbmBufStorageUnref(&buf->storage);
+            buf->storage = tmp_storage;
+            buf->placement = placement;
+        } else {
+            retval = curPool->syncforcpu(storage, WSBM_SYNCCPU_WRITE);
+            if (retval)
+                goto out;
+            synced = 1;
+        }
+    } else {
+        synced = 1;
+    }
+
+    placement_diff = placement ^ buf->placement;
+
+    /*
+    * We might need to change buffer placement.
+    */
+
+    storage = buf->storage;
+    curPool = storage->pool;
+
+    if (placement_diff) {
+        assert(curPool->setStatus != NULL);
+        curPool->releasefromcpu(storage, WSBM_SYNCCPU_WRITE);
+        retval = curPool->setStatus(storage,
+            placement_diff & placement,
+            placement_diff & ~placement);
+        if (retval)
+            goto out;
+
+        buf->placement = placement;
+    }
+
+    if (!synced) {
+        retval = curPool->syncforcpu(buf->storage, WSBM_SYNCCPU_WRITE);
+        if (retval)
+            goto out;
+        synced = 1;
+    }
+
+    storage = buf->storage;
+    curPool = storage->pool;
+
+    if (data) {
+        memcpy((unsigned long *) user_ptr, data, size);
+    }
+
+    out:
+
+    if (synced)
+        curPool->releasefromcpu(storage, WSBM_SYNCCPU_WRITE);
+
+    return retval;
+}
+#endif
 
 static struct _WsbmBufStorage *
 wsbmStorageClone(struct _WsbmBufferObject *buf)
